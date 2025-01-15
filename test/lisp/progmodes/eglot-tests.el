@@ -958,6 +958,26 @@ int main() {
                                       (string-suffix-p "main.rs" locus))))
                              diags))))))))
 
+(ert-deftest eglot-test-per-file-diagnostics-ruby-lsp ()
+  "Test per-file diagnostics in ruby-lsp."
+  (skip-unless (executable-find "bundle"))
+  (eglot--with-fixture
+      '(("project" . (("Gemfile" . "source 'https://rubygems.org'; gem 'rubocop'; gem 'ruby-lsp'")
+                      ("file.rb" . "x = 3"))))
+    (let ((eglot-server-programs
+           '(((ruby-mode ruby-ts-mode) . ("bundle" "exec" "ruby-lsp" :initializationOptions (:bundleGemfile "Gemfile")))))
+          (eglot-autoshutdown nil))
+      (with-current-buffer (eglot--find-file-noselect "project/file.rb")
+        (should (zerop (shell-command "bundle")))
+        (eglot--sniffing (:server-replies s-replies)
+          (flymake-start nil t)
+          (eglot--tests-connect)
+          (eglot--signal-textDocument/didChange)
+          (eglot--signal-textDocument/diagnostic)
+          (eglot--wait-for (s-replies 5) (&key method &allow-other-keys)
+            (string= method "textDocument/diagnostic"))
+          (should (= 1 (length (flymake--project-diagnostics)))))))))
+
 (ert-deftest eglot-test-json-basic ()
   "Test basic autocompletion in vscode-json-languageserver."
   (skip-unless (executable-find "vscode-json-languageserver"))

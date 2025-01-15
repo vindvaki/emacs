@@ -566,6 +566,7 @@ under cursor."
           (const :tag "Format buffer" :documentFormattingProvider)
           (const :tag "Format portion of buffer" :documentRangeFormattingProvider)
           (const :tag "On-type formatting" :documentOnTypeFormattingProvider)
+          (const :tag "Code diagnostics" :diagnosticProvider)
           (const :tag "Rename symbol" :renameProvider)
           (const :tag "Highlight links in document" :documentLinkProvider)
           (const :tag "Decorate color references" :colorProvider)
@@ -1012,6 +1013,15 @@ object."
              :rangeFormatting    `(:dynamicRegistration :json-false)
              :rename             `(:dynamicRegistration :json-false)
              :inlayHint          `(:dynamicRegistration :json-false)
+             :diagnostics (list :relatedInformation :json-false
+                                             ;; TODO: We can support :codeDescription after
+                                             ;; adding an appropriate UI to
+                                             ;; Flymake.
+                                             :codeDescriptionSupport :json-false
+                                             :tagSupport
+                                             `(:valueSet
+                                               [,@(mapcar
+                                                   #'car eglot--tag-faces)]))
              :publishDiagnostics (list :relatedInformation :json-false
                                        ;; TODO: We can support :codeDescription after
                                        ;; adding an appropriate UI to
@@ -2141,6 +2151,7 @@ If it is activated, also signal textDocument/didOpen."
       (setq eglot--diagnostics nil)
       (eglot--managed-mode)
       (eglot--signal-textDocument/didOpen)
+      (eglot--signal-textDocument/diagnostic)
       ;; Run user hook after 'textDocument/didOpen' so server knows
       ;; about the buffer.
       (eglot-inlay-hints-mode 1)
@@ -2426,6 +2437,9 @@ expensive cached value of `file-truename'.")
   (server (_method (eql textDocument/publishDiagnostics)) &key uri diagnostics
            &allow-other-keys) ; FIXME: doesn't respect `eglot-strict-mode'
   "Handle notification publishDiagnostics."
+  (eglot--update-diagnostics server uri diagnostics))
+
+(defun eglot--update-diagnostics (server uri diagnostics)
   (cl-flet ((eglot--diag-type (sev)
               (cond ((null sev) 'eglot-error)
                     ((<= sev 1) 'eglot-error)
@@ -2654,7 +2668,7 @@ buffer."
 
 (defvar-local eglot--change-idle-timer nil "Idle timer for didChange signals.")
 
-(defvar eglot--document-changed-hook '(eglot--signal-textDocument/didChange)
+(defvar eglot--document-changed-hook '(eglot--signal-textDocument/didChange eglot--signal-textDocument/diagnostic)
   "Internal hook for doing things when the document changes.")
 
 (defun eglot--track-changes-fetch (id)
@@ -2867,6 +2881,7 @@ When called interactively, use the currently active server"
 (defun eglot--signal-textDocument/didSave ()
   "Maybe send textDocument/didSave to server."
   (eglot--signal-textDocument/didChange)
+  (eglot--signal-textDocument/diagnostic)
   (when (eglot-server-capable :textDocumentSync :save)
     (jsonrpc-notify
      (eglot--current-server-or-lose)
@@ -2875,6 +2890,23 @@ When called interactively, use the currently active server"
       ;; TODO: Handle TextDocumentSaveRegistrationOptions to control this.
       :text (buffer-substring-no-properties (point-min) (point-max))
       :textDocument (eglot--TextDocumentIdentifier)))))
+
+(defun eglot--signal-textDocument/diagnostic ()
+  "Maybe send textDocument/diagnostic to server."
+  (when (eglot-server-capable :diagnosticProvider)
+    (let* ((textDocument (eglot--TextDocumentIdentifier))
+           (uri (cadr textDocument))
+           (server (eglot--current-server-or-lose)))
+      (jsonrpc-async-request
+       server
+       :textDocument/diagnostic
+       (list
+        :textDocument textDocument)
+       :success-fn
+       (lambda (response)
+         (cl-destructuring-bind (&key kind (items nil) &allow-other-keys) response
+           (when (string= kind "full")
+             (eglot--update-diagnostics server uri items))))))))
 
 (defun eglot-flymake-backend (report-fn &rest _more)
   "A Flymake backend for Eglot.
